@@ -1,8 +1,6 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-import yt_dlp
-import os
-import tempfile
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -13,48 +11,45 @@ def download_audio():
     url = data.get('url') if data else None
 
     if not url:
-        return jsonify({'error': 'URL이 필요합니다.'}), 400
+        return jsonify({'error': '유튜브 URL이 필요합니다.'}), 400
 
     try:
-        temp_dir = tempfile.gettempdir()
-        out_pattern = os.path.join(temp_dir, '%(id)s.%(ext)s')
-
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'outtmpl': out_pattern,
-            'quiet': True,
-            'no_warnings': True,
-            # ★ 유튜브 봇 차단 우회 설정 (모바일 앱 클라이언트로 위장)
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'android', 'mweb']
-                }
-            }
+        # 1. 유튜브 봇 차단을 우회하는 파이프라인 API 호출
+        cobalt_api = "https://api.cobalt.tools/"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "url": url,
+            "downloadMode": "audio",
+            "audioFormat": "mp3"
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            video_id = info['id']
-            file_path = os.path.join(temp_dir, f"{video_id}.mp3")
+        response = requests.post(cobalt_api, json=payload, headers=headers, timeout=30)
+        res_data = response.json()
 
-        if os.path.exists(file_path):
-            title = info.get('title', 'audio').replace('/', '_').replace('\\', '_')
-            return send_file(
-                file_path,
-                mimetype='audio/mpeg',
-                as_attachment=True,
-                download_name=f"{title}.mp3"
-            )
-        else:
-            return jsonify({'error': '파일 변환 실패'}), 500
+        # 2. 다운로드 가능한 음원 스트림 URL 추출
+        download_url = res_data.get('url')
+        if not download_url and res_data.get('picker'):
+            download_url = res_data['picker'][0].get('url')
+
+        if not download_url:
+            return jsonify({'error': '음원을 추출하지 못했습니다. 주소를 확인해주세요.'}), 500
+
+        # 3. 추출된 MP3 바이너리 데이터를 사용자 브라우저로 스트리밍 전송
+        audio_stream = requests.get(download_url, stream=True)
+        
+        return Response(
+            audio_stream.iter_content(chunk_size=1024 * 1024),
+            content_type='audio/mpeg',
+            headers={
+                "Content-Disposition": "attachment; filename=voicecure_audio.mp3"
+            }
+        )
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f"서버 오류: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
