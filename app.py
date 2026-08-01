@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-import requests
+import urllib.request
+import json
 
 app = Flask(__name__)
 CORS(app)
@@ -14,22 +15,28 @@ def download_audio():
         return jsonify({'error': '유튜브 URL이 필요합니다.'}), 400
 
     try:
-        # 1. 유튜브 봇 차단을 우회하는 파이프라인 API 호출
+        # 1. 유튜브 봇 차단을 우회하는 외부 통로 호출
         cobalt_api = "https://api.cobalt.tools/"
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        payload = {
+        payload = json.dumps({
             "url": url,
             "downloadMode": "audio",
             "audioFormat": "mp3"
-        }
+        }).encode('utf-8')
 
-        response = requests.post(cobalt_api, json=payload, headers=headers, timeout=30)
-        res_data = response.json()
+        req = urllib.request.Request(
+            cobalt_api,
+            data=payload,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            },
+            method='POST'
+        )
 
-        # 2. 다운로드 가능한 음원 스트림 URL 추출
+        with urllib.request.urlopen(req, timeout=30) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+
+        # 2. 음원 스트림 URL 추출
         download_url = res_data.get('url')
         if not download_url and res_data.get('picker'):
             download_url = res_data['picker'][0].get('url')
@@ -37,11 +44,19 @@ def download_audio():
         if not download_url:
             return jsonify({'error': '음원을 추출하지 못했습니다. 주소를 확인해주세요.'}), 500
 
-        # 3. 추출된 MP3 바이너리 데이터를 사용자 브라우저로 스트리밍 전송
-        audio_stream = requests.get(download_url, stream=True)
-        
+        # 3. 추출된 MP3 바이너리 데이터를 사용자 브라우저로 전송
+        audio_req = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+        audio_stream = urllib.request.urlopen(audio_req)
+
+        def generate():
+            while True:
+                chunk = audio_stream.read(1024 * 1024) # 1MB 단위 분할 전송
+                if not chunk:
+                    break
+                yield chunk
+
         return Response(
-            audio_stream.iter_content(chunk_size=1024 * 1024),
+            generate(),
             content_type='audio/mpeg',
             headers={
                 "Content-Disposition": "attachment; filename=voicecure_audio.mp3"
