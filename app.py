@@ -1,40 +1,60 @@
-import os
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 import yt_dlp
+import os
+import tempfile
 
 app = Flask(__name__)
-CORS(app)  # 구글 인트라넷 호스팅 접속 허용
+CORS(app)
 
 @app.route('/download', methods=['POST'])
-def download_mp3():
+def download_audio():
     data = request.get_json()
-    youtube_url = data.get('url')
+    url = data.get('url') if data else None
 
-    if not youtube_url:
-        return "URL을 입력해주세요.", 400
-
-    # 임시 폴더(/tmp/)에 MP3 생성
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': '/tmp/%(title)s.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }],
-    }
+    if not url:
+        return jsonify({'error': 'URL이 필요합니다.'}), 400
 
     try:
+        temp_dir = tempfile.gettempdir()
+        out_pattern = os.path.join(temp_dir, '%(id)s.%(ext)s')
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'outtmpl': out_pattern,
+            'quiet': True,
+            'no_warnings': True,
+            # ★ 유튜브 봇 차단 우회 설정 (모바일 앱 클라이언트로 위장)
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'mweb']
+                }
+            }
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=True)
-            filename = ydl.prepare_filename(info)
-            mp3_filename = filename.rsplit('.', 1)[0] + '.mp3'
-            
-        return send_file(mp3_filename, as_attachment=True)
+            info = ydl.extract_info(url, download=True)
+            video_id = info['id']
+            file_path = os.path.join(temp_dir, f"{video_id}.mp3")
+
+        if os.path.exists(file_path):
+            title = info.get('title', 'audio').replace('/', '_').replace('\\', '_')
+            return send_file(
+                file_path,
+                mimetype='audio/mpeg',
+                as_attachment=True,
+                download_name=f"{title}.mp3"
+            )
+        else:
+            return jsonify({'error': '파일 변환 실패'}), 500
+
     except Exception as e:
-        return str(e), 500
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=10000)
